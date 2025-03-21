@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+pydantic
+sqlalchemy
+asyncpg  
+open3d
+numpy
+python-multipart
+temporalio

@@ -1,0 +1,83 @@
+version: '3.8'
+
+services:
+  api:
+    build: .
+    volumes:
+      - ./app:/app/app
+      - ./entrypoint.sh:/app/entrypoint.sh
+    environment:
+      - PYTHONPATH=/usr/src/app
+      - TEMPORAL_HOST=temporal-worker:7233
+    restart: unless-stopped
+    depends_on:
+      - temporal-worker
+    networks:
+      - app-network
+      - temporal-network
+
+  temporal-db:
+    container_name: temporal-postgresql
+    image: postgres:13
+    environment:
+      POSTGRES_PASSWORD: temporal
+      POSTGRES_USER: temporal
+      POSTGRES_DB: temporal
+    networks:
+      - temporal-network
+    ports:
+      - "5432:5432"
+    volumes:
+      - temporal-db-data:/var/lib/postgresql/data
+
+  temporal-worker:
+    container_name: temporal-worker
+    image: temporalio/auto-setup:latest
+    depends_on:
+      - temporal-db
+    environment:
+      - DB=postgres12
+      - DB_PORT=5432
+      - POSTGRES_USER=temporal
+      - POSTGRES_PWD=temporal
+      - POSTGRES_SEEDS=temporal-db
+      - DYNAMIC_CONFIG_FILE_PATH=/etc/temporal/config/dynamicconfig/development-sql.yaml
+    networks:
+      - temporal-network
+    ports:
+      - "7233:7233"
+    volumes:
+      - ./dynamicconfig:/etc/temporal/config/dynamicconfig
+
+  worker-ui:
+    container_name: worker-ui
+    image: temporalio/ui:latest
+    depends_on:
+      - temporal-worker
+    environment:
+      - TEMPORAL_ADDRESS=temporal-worker:7233
+      - TEMPORAL_CORS_ORIGINS=http://localhost:3000
+    networks:
+      - temporal-network
+    ports:
+      - "8081:8080"
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx/app.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - api
+    networks:
+      - app-network
+
+volumes:
+  temporal-db-data:
+
+networks:
+  app-network:
+    driver: bridge
+  temporal-network:
+    driver: bridge
