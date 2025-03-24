@@ -8,22 +8,24 @@ import logging
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
+
 def load_rgbd_image(color_path, depth_path, depth_scale=1000.0, depth_trunc=50.0):
     # Load images using Open3D
     color = o3d.io.read_image(color_path)
-    
+
     data = np.fromfile(depth_path, dtype=np.uint16)
     color_np = np.asarray(color)
     width = color_np.shape[1]
     height = color_np.shape[0]
     if data.size != width * height:
-        raise ValueError(f"Unexpected data size {data.size} for resolution {width}x{height}")
-    
+        raise ValueError(
+            f"Unexpected data size {data.size} for resolution {width}x{height}")
+
     data = data.reshape((height, width))
     logger.info("Depth data array shape: %s", data.shape)
-    
+
     depth = o3d.geometry.Image(data)
-    
+
     rgbd_image = o3d.geometry.RGBDImage.create_from_color_and_depth(
         color,
         depth,
@@ -33,6 +35,7 @@ def load_rgbd_image(color_path, depth_path, depth_scale=1000.0, depth_trunc=50.0
     )
     return rgbd_image
 
+
 def create_point_cloud(rgbd_image, intrinsic, extrinsic):
     """
     Generate a point cloud from an RGB-D image and transform it using extrinsics.
@@ -41,18 +44,21 @@ def create_point_cloud(rgbd_image, intrinsic, extrinsic):
     pcd.transform(extrinsic)  # Apply transformation
     return pcd
 
+
 def estimate_normals(pcd, search_radius=0.2, max_nn=30):
     """
     Estimate normals for the point cloud without parallel processing.
     """
     logger.info("Estimating normals...")
     pcd.estimate_normals(
-        search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=search_radius, max_nn=max_nn)
+        search_param=o3d.geometry.KDTreeSearchParamHybrid(
+            radius=search_radius, max_nn=max_nn)
     )
     logger.info("Orienting normals...")
     pcd.orient_normals_towards_camera_location()
-    
+
     return pcd
+
 
 def preprocess_point_cloud(pcd, voxel_size=0.1):
     """
@@ -61,8 +67,10 @@ def preprocess_point_cloud(pcd, voxel_size=0.1):
     # Downsample
     pcd_down = pcd.voxel_down_sample(voxel_size=voxel_size)
     # Remove statistical outliers
-    pcd_clean, ind = pcd_down.remove_statistical_outlier(nb_neighbors=50, std_ratio=2.0)
+    pcd_clean, ind = pcd_down.remove_statistical_outlier(
+        nb_neighbors=50, std_ratio=2.0)
     return pcd_clean
+
 
 def load_intrinsic(intrinsic_path=None):
     """
@@ -71,16 +79,17 @@ def load_intrinsic(intrinsic_path=None):
     if intrinsic_path and os.path.exists(intrinsic_path):
         with open(intrinsic_path, "r") as f:
             lines = f.readlines()
-        
+
         params = {}
         for line in lines:
             key, value = line.strip().split(":")
             params[key.strip()] = float(value.strip())
-        
+
         fx, fy = params["fx"], params["fy"]
         cx, cy = params["cx"], params["cy"]
         width, height = int(2 * cx), int(2 * cy)
-        intrinsic = o3d.camera.PinholeCameraIntrinsic(width, height, fx, fy, cx, cy)
+        intrinsic = o3d.camera.PinholeCameraIntrinsic(
+            width, height, fx, fy, cx, cy)
         logger.info("Loaded camera intrinsics from %s", intrinsic_path)
     else:
         intrinsic = o3d.camera.PinholeCameraIntrinsic(
@@ -89,13 +98,16 @@ def load_intrinsic(intrinsic_path=None):
         logger.info("Using default PrimeSense intrinsic parameters.")
     return intrinsic
 
+
 def load_extrinsic(metadata_path):
     """
     Load extrinsic transformation matrix from metadata JSON.
     """
     with open(metadata_path, "r") as f:
         metadata = json.load(f)
-    return np.array(metadata["transformed_pose"])  # Load transformed pose as a NumPy array
+    # Load transformed pose as a NumPy array
+    return np.array(metadata["transformed_pose"])
+
 
 def register_point_clouds(source, target, max_correspondence_distance_coarse=0.02, max_correspondence_distance_fine=0.01):
     """
@@ -123,7 +135,8 @@ def register_point_clouds(source, target, max_correspondence_distance_coarse=0.0
 
     return icp_fine.transformation
 
-def process_point_cloud(self, project_directory, intrinsic_path=None, voxel_size=0.005, 
+
+def process_point_cloud(project_directory, intrinsic_path=None, voxel_size=0.005,
                         max_correspondence_distance_coarse=0.02, max_correspondence_distance_fine=0.01):
     """
     Celery task to process a project's image frames into a combined point cloud.
@@ -169,13 +182,15 @@ def process_point_cloud(self, project_directory, intrinsic_path=None, voxel_size
             metadata_path = os.path.join(metadata_dir, metadata_file)
 
             if not all(os.path.isfile(p) for p in [color_path, depth_path, metadata_path]):
-                logger.warning("Missing files for frame %d, skipping.", idx + 1)
+                logger.warning(
+                    "Missing files for frame %d, skipping.", idx + 1)
                 continue
 
             try:
                 rgbd_image = load_rgbd_image(color_path, depth_path)
                 if rgbd_image is None:
-                    logger.warning("Failed to load RGBD image for frame %d, skipping.", idx + 1)
+                    logger.warning(
+                        "Failed to load RGBD image for frame %d, skipping.", idx + 1)
                     continue
 
                 extrinsic = load_extrinsic(metadata_path)
@@ -183,20 +198,22 @@ def process_point_cloud(self, project_directory, intrinsic_path=None, voxel_size
                 pcd = estimate_normals(pcd)
                 # Optionally, you can preprocess the point cloud:
                 # pcd = preprocess_point_cloud(pcd, voxel_size=voxel_size)
-                
+
                 if combined_pcd is None:
                     combined_pcd = pcd
-                    logger.info("Initialized combined point cloud with frame %d.", idx + 1)
+                    logger.info(
+                        "Initialized combined point cloud with frame %d.", idx + 1)
                 else:
-                    transformation = register_point_clouds(pcd, combined_pcd, 
-                                                           max_correspondence_distance_coarse, 
+                    transformation = register_point_clouds(pcd, combined_pcd,
+                                                           max_correspondence_distance_coarse,
                                                            max_correspondence_distance_fine)
                     if transformation is not None:
                         pcd.transform(transformation)
                         combined_pcd += pcd
                         logger.info("Registered and merged frame %d.", idx + 1)
                     else:
-                        logger.warning("Skipping frame %d due to poor registration.", idx + 1)
+                        logger.warning(
+                            "Skipping frame %d due to poor registration.", idx + 1)
             except Exception as e:
                 logger.error("Error processing frame %d: %s", idx + 1, str(e))
                 continue

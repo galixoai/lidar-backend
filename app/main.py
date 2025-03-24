@@ -9,10 +9,10 @@ import logging
 from typing import List, Optional
 from fastapi.middleware.cors import CORSMiddleware
 from temporalio.client import Client
-from utils import PointCloudWorkflow
+from app.utils import PointCloudWorkflow
 
 
-# Set up logging
+# Set up loggingsq
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
@@ -30,14 +30,16 @@ app.add_middleware(
 BASE_DIR = "./ProjectData"
 os.makedirs(BASE_DIR, exist_ok=True)
 
+
 def transform_iphone_pose_to_open3d(pose_matrix):
     """
     Converts iPhone (ARKit) rotation matrices to Open3D format.
     - Negates the Z-axis to match Open3D's convention.
     """
     pose_matrix = np.array(pose_matrix)
-    pose_matrix[:, 2] *= -1 
+    pose_matrix[:, 2] *= -1
     return pose_matrix.tolist()
+
 
 @app.post("/start-project")
 async def create_project(
@@ -59,6 +61,7 @@ async def create_project(
 
     logger.info("Created project %s", guid)
     return {"guid": guid}
+
 
 @app.post("/upload-frame")
 async def upload_frames(
@@ -84,7 +87,8 @@ async def upload_frames(
     os.makedirs(coordinates_dir, exist_ok=True)
 
     if len(rgb_frames) != len(depth_frames) or len(rgb_frames) != len(metadata):
-        raise HTTPException(status_code=400, detail="RGB, depth frames, and metadata must have the same length.")
+        raise HTTPException(
+            status_code=400, detail="RGB, depth frames, and metadata must have the same length.")
 
     existing_files = [f for f in os.listdir(rgb_dir)]
     max_index = max([int(f.split("_")[0]) for f in existing_files], default=-1)
@@ -104,13 +108,16 @@ async def upload_frames(
             shutil.copyfileobj(depth_frames[i].file, f)
 
         # Process and save metadata
-        metadata_path = os.path.join(metadata_dir, f"{frame_index_str}_metadata.json")
+        metadata_path = os.path.join(
+            metadata_dir, f"{frame_index_str}_metadata.json")
         try:
             metadata_content = metadata[i].file.read().decode("utf-8").strip()
             if metadata_content.startswith("simd_float4x4"):
-                metadata_content = metadata_content.replace("simd_float4x4(", "").replace(")", "")
+                metadata_content = metadata_content.replace(
+                    "simd_float4x4(", "").replace(")", "")
             original_pose_matrix = eval(metadata_content)
-            transformed_pose = transform_iphone_pose_to_open3d(original_pose_matrix)
+            transformed_pose = transform_iphone_pose_to_open3d(
+                original_pose_matrix)
             metadata_json = {
                 "original_pose": original_pose_matrix,
                 "transformed_pose": transformed_pose
@@ -118,15 +125,18 @@ async def upload_frames(
             with open(metadata_path, "w") as f:
                 json.dump(metadata_json, f, indent=4)
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Error processing metadata: {str(e)}")
+            raise HTTPException(
+                status_code=500, detail=f"Error processing metadata: {str(e)}")
 
         if coordinates and len(coordinates) > i:
-            coordinates_path = os.path.join(coordinates_dir, coordinates[i].filename)
+            coordinates_path = os.path.join(
+                coordinates_dir, coordinates[i].filename)
             with open(coordinates_path, "wb") as f:
                 shutil.copyfileobj(coordinates[i].file, f)
-    
+
     logger.info("Uploaded %d frames for project %s", len(rgb_frames), guid)
     return {"message": "Frames, metadata, and transformed poses uploaded successfully."}
+
 
 @app.post("/finalize")
 async def finalize_project(
@@ -141,8 +151,10 @@ async def finalize_project(
     # Start the Celery task
     client = await Client.connect("temporal:7233")  # Connect to Temporal
     handle = await client.start_workflow(PointCloudWorkflow.run, project_dir, intrinsic_path, id=f"workflow-{guid}", task_queue="pointcloud-queue")
-    logger.info("Started Temporal workflow for project %s with workflow id %s", guid, handle.id)
+    logger.info(
+        "Started Temporal workflow for project %s with workflow id %s", guid, handle.id)
     return {"workflow_id": handle.id, "status": "Processing started"}
+
 
 @app.get("/workflow-status/{workflow_id}")
 async def get_workflow_status(workflow_id: str):
@@ -153,6 +165,7 @@ async def get_workflow_status(workflow_id: str):
 
     return {"status": result}
 
+
 @app.get("/upload-frame-count")
 async def get_project_data(guid: str):
     project_dir = os.path.join(BASE_DIR, guid)
@@ -161,6 +174,7 @@ async def get_project_data(guid: str):
         return {"upload_frame_count": 0}
     return {"upload_frame_count": len(os.listdir(rgb_dir))}
 
+
 @app.delete("/delete-project")
 async def delete_project(guid: str):
     project_dir = os.path.join(BASE_DIR, guid)
@@ -168,12 +182,19 @@ async def delete_project(guid: str):
     logger.info("Deleted project %s", guid)
     return {"message": "Project deleted successfully."}
 
+
+@app.get("/hello-world")
+async def hello_world():
+    return {"message": "Hello, World!"}
+
+
 @app.get("/get_point_cloud")
 async def get_point_cloud(guid: str):
     ply_path = os.path.join(BASE_DIR, guid, "point_cloud.ply")
     if os.path.exists(ply_path):
         return FileResponse(ply_path, media_type="application/octet-stream")
     raise HTTPException(status_code=404, detail="Point cloud file not found.")
+
 
 @app.get("/visualize", response_class=HTMLResponse)
 async def visualize_point_cloud(guid: str):

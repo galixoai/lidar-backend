@@ -3,7 +3,7 @@ version: "3.8"
 services:
   api:
     build: .
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    command: gunicorn app.main:app -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000 --workers 4
     volumes:
       - ./app:/app/app
     environment:
@@ -32,10 +32,9 @@ services:
   temporal-db:
     container_name: temporal-postgresql
     image: postgres:13
-    environment:
-      POSTGRES_PASSWORD: temporal
-      POSTGRES_USER: temporal
-      POSTGRES_DB: temporal
+    environment: POSTGRES_PASSWORD=temporal
+      POSTGRES_USER=temporal
+      POSTGRES_DB=temporal
     networks:
       - temporal-network
     ports:
@@ -69,7 +68,6 @@ services:
       - temporal-worker
     environment:
       - TEMPORAL_ADDRESS=temporal-worker:7233
-      - TEMPORAL_CORS_ORIGINS=http://localhost:3000
     networks:
       - temporal-network
     ports:
@@ -78,9 +76,9 @@ services:
   nginx:
     image: nginx:alpine
     ports:
-      - "8080:80"
+      - "80:80"
     volumes:
-      - ./nginx/app.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/app.prod.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
       - api
     networks:

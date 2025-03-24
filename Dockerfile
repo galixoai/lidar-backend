@@ -1,4 +1,3 @@
-# Use an official Python runtime
 FROM python:3.9-slim
 
 # Install system dependencies including X11 and other required libraries for Open3D
@@ -17,16 +16,12 @@ WORKDIR /app
 
 # Copy requirements and install Python dependencies
 COPY requirements.txt .
-RUN pip install -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY app/ /app/app/
-COPY entrypoint.sh /app/
-
-# Make entrypoint executable
-RUN chmod +x /app/entrypoint.sh
 
 # Set Python path
 ENV PYTHONPATH=/app
 
-CMD ["./entrypoint.sh"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
