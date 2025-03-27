@@ -1,4 +1,4 @@
-# RGBD Point Cloud API
+# RGBD Point Cloud APIs
 
 This is a FastAPI application for handling RGBD data and generating point clouds.
 
