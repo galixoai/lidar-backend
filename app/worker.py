@@ -21,6 +21,5 @@ async def main():
 
     await worker.run()
 
-# ✅ THIS PART WAS MISSING
 if __name__ == "__main__":
     asyncio.run(main())
