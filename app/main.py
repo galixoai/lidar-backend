@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Form, HTTPException, UploadFile, File
+from fastapi import FastAPI, Form, HTTPException, UploadFile, File, Query
 from fastapi.responses import FileResponse, HTMLResponse
 import uuid
 import os
@@ -10,6 +10,9 @@ from typing import List, Optional
 from fastapi.middleware.cors import CORSMiddleware
 from temporalio.client import Client
 from app.utils import PointCloudWorkflow
+
+from temporalio.service import RPCError, RPCStatusCode
+import open3d as o3d
 
 
 # Set up loggingsq
@@ -56,6 +59,7 @@ async def create_project(
 
     metadata_path = os.path.join(project_dir, "metadata.txt")
     with open(metadata_path, "w") as f:
+        print("Project Creation")
         f.write(f"Project Name: {name}\n")
         f.write(f"Intrinsics Params: {intrisics_path}\n")
 
@@ -112,16 +116,51 @@ async def upload_frames(
             metadata_dir, f"{frame_index_str}_metadata.json")
         try:
             metadata_content = metadata[i].file.read().decode("utf-8").strip()
-            if metadata_content.startswith("simd_float4x4"):
-                metadata_content = metadata_content.replace(
-                    "simd_float4x4(", "").replace(")", "")
-            original_pose_matrix = eval(metadata_content)
-            transformed_pose = transform_iphone_pose_to_open3d(
-                original_pose_matrix)
-            metadata_json = {
-                "original_pose": original_pose_matrix,
-                "transformed_pose": transformed_pose
-            }
+            # if metadata_content.startswith("simd_float4x4"):
+            #     metadata_content = metadata_content.replace(
+            #         "simd_float4x4(", "").replace(")", "")
+            # original_pose_matrix = eval(metadata_content)
+
+            # if metadata_content.startswith("simd_float4x4"):
+            #     metadata_content = metadata_content.replace(
+            #         "simd_float4x4(", "").replace(")", "")
+
+            # try:
+            #     original_pose_matrix = ast.literal_eval(metadata_content)
+            #     pose_matrix = np.array(original_pose_matrix)
+            #     if pose_matrix.ndim != 2 or pose_matrix.shape != (4, 4):
+            #         raise ValueError("Pose matrix must be a 4x4 array.")
+            #     transformed_pose = transform_iphone_pose_to_open3d(pose_matrix)
+            # except Exception as e:
+            #     raise HTTPException(
+            #         status_code=500, detail=f"Invalid metadata format: {str(e)}")
+            # transformed_pose = transform_iphone_pose_to_open3d(
+            #     original_pose_matrix)
+            # metadata_json = {
+            #     "original_pose": original_pose_matrix,
+            #     "transformed_pose": transformed_pose
+            # }
+
+            try:
+                metadata_dict = json.loads(metadata_content)
+                original_pose_matrix = metadata_dict["original_pose"]
+                pose_matrix = np.array(original_pose_matrix)
+
+                if pose_matrix.ndim != 2 or pose_matrix.shape != (4, 4):
+                    raise ValueError("Pose matrix must be a 4x4 array.")
+
+                transformed_pose = transform_iphone_pose_to_open3d(pose_matrix)
+                metadata_json = {
+                    "original_pose": original_pose_matrix,
+                    "transformed_pose": transformed_pose
+                }
+
+                with open(metadata_path, "w") as f:
+                    json.dump(metadata_json, f, indent=4)
+            except Exception as e:
+                raise HTTPException(
+                    status_code=500, detail=f"Error processing metadata: {str(e)}")
+
             with open(metadata_path, "w") as f:
                 json.dump(metadata_json, f, indent=4)
         except Exception as e:
@@ -140,6 +179,7 @@ async def upload_frames(
 
 @app.post("/finalize")
 async def finalize_project(
+
     guid: str = Form(...),
     project_name: str = Form(...)
 ):
@@ -148,22 +188,58 @@ async def finalize_project(
         raise HTTPException(status_code=404, detail="Project GUID not found.")
 
     intrinsic_path = os.path.join(project_dir, "intrinsics.txt")
-    # Start the Celery task
-    client = await Client.connect("temporal:7233")  # Connect to Temporal
-    handle = await client.start_workflow(PointCloudWorkflow.run, project_dir, intrinsic_path, id=f"workflow-{guid}", task_queue="pointcloud-queue")
-    logger.info(
-        "Started Temporal workflow for project %s with workflow id %s", guid, handle.id)
-    return {"workflow_id": handle.id, "status": "Processing started"}
+
+    try:
+        client = await Client.connect("temporal-worker:7233")
+
+        # ✅ Create a unique workflow ID using UUID
+        workflow_id = f"workflow-{guid}-{uuid.uuid4()}"
+
+        handle = await client.start_workflow(
+            PointCloudWorkflow.run,
+            args=[project_dir, intrinsic_path],
+            id=workflow_id,
+            task_queue="pointcloud-queue"
+        )
+
+        return {
+            "workflow_id": handle.id,
+            "run_id": handle.first_execution_run_id,
+            "status": "Processing started"
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Failed to start workflow: {str(e)}")
 
 
-@app.get("/workflow-status/{workflow_id}")
-async def get_workflow_status(workflow_id: str):
-    client = await Client.connect("temporal:7233")
+@app.get("/workflow-status")
+async def get_workflow_status(
+    workflow_id: str = Query(...),
+    run_id: str = Query(...)
+):
+    try:
+        client = await Client.connect("temporal-worker:7233")
+        handle = client.get_workflow_handle(workflow_id, run_id=run_id)
 
-    handle = client.get_workflow_handle(workflow_id)
-    result = await handle.result()
+        info = await handle.describe()
 
-    return {"status": result}
+        return {
+            "workflow_id": workflow_id,
+            "run_id": run_id,
+            "status": info.status.name  # e.g., RUNNING, COMPLETED, FAILED
+        }
+
+    except RPCError as e:
+        if "not found" in str(e).lower():
+            raise HTTPException(
+                status_code=404, detail=f"Workflow '{workflow_id}' with run '{run_id}' not found.")
+        raise HTTPException(
+            status_code=500, detail=f"Temporal RPC error: {str(e)}")
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Unexpected error: {str(e)}")
 
 
 @app.get("/upload-frame-count")
@@ -261,3 +337,45 @@ async def visualize_point_cloud(guid: str):
     </html>
     """
     return HTMLResponse(content=html_content)
+
+
+@app.get("/get_mesh")
+async def get_mesh(guid: str, format: str = "obj"):
+    import traceback
+
+    ply_path = os.path.join(BASE_DIR, guid, "point_cloud.ply")
+    if not os.path.exists(ply_path):
+        raise HTTPException(
+            status_code=404, detail="Point cloud file not found.")
+
+    try:
+        pcd = o3d.io.read_point_cloud(ply_path)
+        pcd.estimate_normals()
+
+        try:
+            # Fast method
+            mesh = o3d.geometry.TriangleMesh.create_from_point_cloud_alpha_shape(
+                pcd, alpha=0.03)
+        except Exception as alpha_err:
+            print("[⚠️ Fallback] Alpha shape failed. Using Poisson...")
+            mesh, _ = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
+                pcd, depth=7)
+
+        mesh.compute_vertex_normals()
+
+        if format == "obj":
+            output_path = os.path.join(BASE_DIR, guid, "mesh.obj")
+            o3d.io.write_triangle_mesh(output_path, mesh)
+            return FileResponse(output_path, media_type="text/plain")
+        elif format == "glb":
+            output_path = os.path.join(BASE_DIR, guid, "mesh.glb")
+            o3d.io.write_triangle_mesh(output_path, mesh, write_ascii=False)
+            return FileResponse(output_path, media_type="model/gltf-binary")
+        else:
+            raise HTTPException(
+                status_code=400, detail="Unsupported format. Use 'obj' or 'glb'.")
+
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500, detail=f"Mesh generation failed: {str(e)}")

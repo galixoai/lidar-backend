@@ -1,10 +1,16 @@
-from temporalio.client import Client
 from temporalio.worker import Worker
-from .utils import PointCloudWorkflow
-from .activities import process_point_cloud_activity
+from temporalio.client import Client
+from app.activities import process_point_cloud_activity
+from app.utils import PointCloudWorkflow
+import asyncio
+import logging
+
+logging.basicConfig(level=logging.INFO)
+print("[Worker] Starting worker...")
+
 
 async def main():
-    client = await Client.connect("temporal-worker:7233")  # Change for Temporal Cloud if needed
+    client = await Client.connect("temporal-worker:7233")
 
     worker = Worker(
         client,
@@ -15,6 +21,6 @@ async def main():
 
     await worker.run()
 
+# ✅ THIS PART WAS MISSING
 if __name__ == "__main__":
-    import asyncio
     asyncio.run(main())

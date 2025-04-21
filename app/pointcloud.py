@@ -9,22 +9,36 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 
+# def load_rgbd_image(color_path, depth_path, depth_scale=1000.0, depth_trunc=50.0):
+#     # Load images using Open3D
+#     color = o3d.io.read_image(color_path)
+
+#     data = np.fromfile(depth_path, dtype=np.uint16)
+#     color_np = np.asarray(color)
+#     width = color_np.shape[1]
+#     height = color_np.shape[0]
+#     if data.size != width * height:
+#         raise ValueError(
+#             f"Unexpected data size {data.size} for resolution {width}x{height}")
+
+#     data = data.reshape((height, width))
+#     logger.info("Depth data array shape: %s", data.shape)
+
+#     depth = o3d.geometry.Image(data)
+
+#     rgbd_image = o3d.geometry.RGBDImage.create_from_color_and_depth(
+#         color,
+#         depth,
+#         depth_scale=depth_scale,
+#         depth_trunc=depth_trunc,
+#         convert_rgb_to_intensity=False
+#     )
+#     return rgbd_image
+
+
 def load_rgbd_image(color_path, depth_path, depth_scale=1000.0, depth_trunc=50.0):
-    # Load images using Open3D
     color = o3d.io.read_image(color_path)
-
-    data = np.fromfile(depth_path, dtype=np.uint16)
-    color_np = np.asarray(color)
-    width = color_np.shape[1]
-    height = color_np.shape[0]
-    if data.size != width * height:
-        raise ValueError(
-            f"Unexpected data size {data.size} for resolution {width}x{height}")
-
-    data = data.reshape((height, width))
-    logger.info("Depth data array shape: %s", data.shape)
-
-    depth = o3d.geometry.Image(data)
+    depth = o3d.io.read_image(depth_path)
 
     rgbd_image = o3d.geometry.RGBDImage.create_from_color_and_depth(
         color,
@@ -138,12 +152,9 @@ def register_point_clouds(source, target, max_correspondence_distance_coarse=0.0
 
 def process_point_cloud(project_directory, intrinsic_path=None, voxel_size=0.005,
                         max_correspondence_distance_coarse=0.02, max_correspondence_distance_fine=0.01):
-    """
-    Celery task to process a project's image frames into a combined point cloud.
-    Updates its state along the way.
-    """
     try:
-        logger.info("Starting process_point_cloud task.")
+        logger.info(
+            "[START] Processing point cloud for project: %s", project_directory)
 
         intrinsic = load_intrinsic(intrinsic_path)
         combined_pcd = None
@@ -152,9 +163,11 @@ def process_point_cloud(project_directory, intrinsic_path=None, voxel_size=0.005
         color_dir = os.path.join(project_directory, 'rgb')
         depth_dir = os.path.join(project_directory, 'depth')
         metadata_dir = os.path.join(project_directory, 'metadata')
+        logger.info("RGB: %s | DEPTH: %s | META: %s",
+                    color_dir, depth_dir, metadata_dir)
 
         if not all(os.path.exists(d) for d in [color_dir, depth_dir, metadata_dir]):
-            error_msg = f"Missing one or more directories in {project_directory}"
+            error_msg = f"[ERROR] Missing required directories in {project_directory}"
             logger.error(error_msg)
             raise Exception(error_msg)
 
@@ -163,78 +176,89 @@ def process_point_cloud(project_directory, intrinsic_path=None, voxel_size=0.005
             depth_files = sorted(os.listdir(depth_dir))
             metadata_files = sorted(os.listdir(metadata_dir))
         except Exception as e:
-            logger.error("Error listing directory contents: %s", str(e))
-            raise Exception(str(e))
+            logger.exception("Failed to list input files: %s", str(e))
+            raise
 
         if len(color_files) != len(depth_files) or len(color_files) != len(metadata_files):
-            error_msg = "Mismatch between file counts in project directory."
+            error_msg = f"File count mismatch - RGB: {len(color_files)}, Depth: {len(depth_files)}, Metadata: {len(metadata_files)}"
             logger.error(error_msg)
             raise Exception(error_msg)
 
         total_frames = len(color_files)
-        logger.info("Processing %d image pairs.", total_frames)
+        logger.info("Found %d frames to process", total_frames)
 
-        # Process each frame and update progress
         for idx, (color_file, depth_file, metadata_file) in enumerate(zip(color_files, depth_files, metadata_files)):
-            # Build full paths
+            logger.info("Processing frame %d - RGB: %s | Depth: %s | Meta: %s",
+                        idx + 1, color_file, depth_file, metadata_file)
+
             color_path = os.path.join(color_dir, color_file)
             depth_path = os.path.join(depth_dir, depth_file)
             metadata_path = os.path.join(metadata_dir, metadata_file)
 
             if not all(os.path.isfile(p) for p in [color_path, depth_path, metadata_path]):
                 logger.warning(
-                    "Missing files for frame %d, skipping.", idx + 1)
+                    "Frame %d skipped due to missing files", idx + 1)
                 continue
 
             try:
+                logger.info("Loading RGBD image...")
                 rgbd_image = load_rgbd_image(color_path, depth_path)
+
                 if rgbd_image is None:
                     logger.warning(
-                        "Failed to load RGBD image for frame %d, skipping.", idx + 1)
+                        "RGBD image load failed at frame %d", idx + 1)
                     continue
 
+                logger.info("Loading extrinsic matrix...")
                 extrinsic = load_extrinsic(metadata_path)
+
+                logger.info("Creating point cloud...")
                 pcd = create_point_cloud(rgbd_image, intrinsic, extrinsic)
+
+                logger.info("Estimating normals...")
                 pcd = estimate_normals(pcd)
-                # Optionally, you can preprocess the point cloud:
+
+                # Optional preprocessing
+                # logger.info("Preprocessing point cloud (voxel size %.3f)", voxel_size)
                 # pcd = preprocess_point_cloud(pcd, voxel_size=voxel_size)
 
                 if combined_pcd is None:
                     combined_pcd = pcd
                     logger.info(
-                        "Initialized combined point cloud with frame %d.", idx + 1)
+                        "Initialized base point cloud with frame %d", idx + 1)
                 else:
+                    logger.info("Registering point cloud via ICP...")
                     transformation = register_point_clouds(pcd, combined_pcd,
                                                            max_correspondence_distance_coarse,
                                                            max_correspondence_distance_fine)
                     if transformation is not None:
+                        logger.info(
+                            "ICP succeeded. Transforming and merging frame %d", idx + 1)
                         pcd.transform(transformation)
                         combined_pcd += pcd
-                        logger.info("Registered and merged frame %d.", idx + 1)
                     else:
                         logger.warning(
-                            "Skipping frame %d due to poor registration.", idx + 1)
+                            "ICP failed for frame %d. Skipping...", idx + 1)
             except Exception as e:
-                logger.error("Error processing frame %d: %s", idx + 1, str(e))
+                logger.exception("Error during frame %d: %s", idx + 1, str(e))
                 continue
 
-        # Final success state
+        # Final save
         if combined_pcd is not None and combined_pcd.has_points():
             output_path = os.path.join(project_directory, "point_cloud.ply")
             try:
+                logger.info("Writing final point cloud to: %s", output_path)
                 o3d.io.write_point_cloud(output_path, combined_pcd)
-                logger.info("Saved combined point cloud to %s", output_path)
-                result = {
-                    'output_path': output_path
-                }
-                return result
+                logger.info("[SUCCESS] Final point cloud saved.")
+
+                return {"output_path": output_path}
             except Exception as e:
-                logger.error("Error saving point cloud: %s", str(e))
-                raise Exception(str(e))
+                logger.exception("Failed to write .ply file: %s", str(e))
+                raise
         else:
-            error_msg = "No valid point cloud data generated."
-            logger.error(error_msg)
-            raise Exception(error_msg)
+            logger.error("No valid point cloud was generated from frames.")
+            raise Exception("No valid point cloud data generated.")
     except Exception as e:
-        logger.exception("Unexpected error in process_point_cloud:")
-        raise Exception(str(e))
+        logger.exception(
+            "[FATAL] Unexpected error in process_point_cloud: %s", str(e))
+        raise

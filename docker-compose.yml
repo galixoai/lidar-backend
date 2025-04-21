@@ -1,11 +1,11 @@
-version: "3.8"
-
 services:
   api:
     build: .
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     volumes:
+      - ./ProjectData:/app/ProjectData
       - ./app:/app/app
+
     environment:
       - TEMPORAL_HOST=temporal-worker:7233
     depends_on:
@@ -20,6 +20,7 @@ services:
     build: .
     command: python -m app.worker
     volumes:
+      - ./ProjectData:/app/ProjectData
       - ./app:/app/app
     environment:
       - TEMPORAL_HOST=temporal-worker:7233

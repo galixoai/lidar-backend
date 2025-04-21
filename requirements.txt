@@ -2,8 +2,9 @@ fastapi
 uvicorn
 pydantic
 sqlalchemy
-asyncpg  
+asyncpg
 open3d
 numpy
 python-multipart
-temporalio
+temporalio>=1.2.0
+
