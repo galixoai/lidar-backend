@@ -339,43 +339,51 @@ async def visualize_point_cloud(guid: str):
     return HTMLResponse(content=html_content)
 
 
-@app.get("/get_mesh")
-async def get_mesh(guid: str, format: str = "obj"):
-    import traceback
-
-    ply_path = os.path.join(BASE_DIR, guid, "point_cloud.ply")
+@app.get("/generate_mesh")
+async def generate_mesh(guid: str):
+    ply_path = os.path.join(BASE_DIR, guid, "test_large.ply")
     if not os.path.exists(ply_path):
-        raise HTTPException(
-            status_code=404, detail="Point cloud file not found.")
+        logger.error(f"Point cloud file not found for GUID: {guid}")
+        raise FileNotFoundError(f"Point cloud file not found: {ply_path}")
 
     try:
+        logger.info(f"Loading point cloud from {ply_path}")
         pcd = o3d.io.read_point_cloud(ply_path)
-        pcd.estimate_normals()
 
+        logger.info("Down sampling point cloud for faster processing")
+        pcd = pcd.voxel_down_sample(voxel_size=0.005)
+
+        logger.info("Estimating normals for the point cloud")
+        pcd.estimate_normals()
+        pcd.orient_normals_consistent_tangent_plane(100)
+
+        logger.info("Trying to generate mesh using Alpha Shape")
         try:
-            # Fast method
+            alpha = 0.03
             mesh = o3d.geometry.TriangleMesh.create_from_point_cloud_alpha_shape(
-                pcd, alpha=0.03)
+                pcd, alpha)
+            if len(mesh.triangles) == 0:
+                raise ValueError("Alpha Shape mesh is empty")
+            logger.info(f"Mesh generated using Alpha Shape with alpha={alpha}")
         except Exception as alpha_err:
-            print("[⚠️ Fallback] Alpha shape failed. Using Poisson...")
+            logger.warning(f"Alpha Shape failed: {str(alpha_err)}")
+            logger.info("Falling back to Poisson Surface Reconstruction")
             mesh, _ = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
                 pcd, depth=7)
+            logger.info("Mesh generated using Poisson Surface Reconstruction")
 
+        logger.info("Computing vertex normals for the mesh")
         mesh.compute_vertex_normals()
 
-        if format == "obj":
-            output_path = os.path.join(BASE_DIR, guid, "mesh.obj")
-            o3d.io.write_triangle_mesh(output_path, mesh)
-            return FileResponse(output_path, media_type="text/plain")
-        elif format == "glb":
-            output_path = os.path.join(BASE_DIR, guid, "mesh.glb")
-            o3d.io.write_triangle_mesh(output_path, mesh, write_ascii=False)
-            return FileResponse(output_path, media_type="model/gltf-binary")
-        else:
-            raise HTTPException(
-                status_code=400, detail="Unsupported format. Use 'obj' or 'glb'.")
+        mesh_path = os.path.join(BASE_DIR, guid, "mesh_large.ply")
+        logger.info(f"Saving mesh to {mesh_path}")
+        o3d.io.write_triangle_mesh(mesh_path, mesh)
+        # o3d.visualization.draw_geometries([pcd])
+
+        logger.info(
+            f"✅ Mesh generation completed successfully for GUID: {guid}")
 
     except Exception as e:
-        traceback.print_exc()
+        logger.exception(f"Mesh generation failed for GUID: {guid}")
         raise HTTPException(
             status_code=500, detail=f"Mesh generation failed: {str(e)}")
